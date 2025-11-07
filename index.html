@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#4caf50">
+<!-- Configuration iOS -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Énergie">
+<link rel="apple-touch-icon" href="icon.png">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+body { font-family: Arial, sans-serif; text-align: center; padding: 20px; background-color: #fff; }
+h2 { font-size: 24px; margin-bottom: 20px; }
+
+.energy-bar { width: 80%; height: 30px; background-color: #eee; border-radius: 15px; margin: 0 auto 20px; overflow: hidden; position: relative; }
+.energy-fill { height: 100%; width: 70%; border-radius: 15px 0 0 15px; transition: width 0.4s, background-color 0.4s; }
+.energy-text { font-size: 18px; font-weight: bold; margin-top: 8px; }
+
+.low .energy-fill { background-color: #f44336; }
+.medium .energy-fill { background-color: #ff9800; }
+.high .energy-fill { background-color: #4caf50; }
+
+.low .energy-text { color: #f44336; }
+.medium .energy-text { color: #ff9800; }
+.high .energy-text { color: #4caf50; }
+
+.activity-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 15px; margin-top: 20px; }
+.activity { flex: 1 1 40%; max-width: 200px; padding: 15px; font-size: 16px; border: none; border-radius: 12px; color: white; cursor: grab; transition: transform 0.2s, opacity 0.2s; }
+.activity:active { transform: scale(0.95); opacity: 0.8; }
+.gain { background-color: #4caf50; }
+.cost { background-color: #ff9800; }
+
+.alert { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); background-color: #f44336; color: white; padding: 15px 25px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); opacity: 0; pointer-events: none; transition: opacity 0.5s, transform 0.3s; z-index: 1000; }
+.alert.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -10px); }
+
+form { margin-top: 20px; }
+input[type="text"] { padding: 8px; font-size: 16px; width: 150px; margin-right: 10px; }
+select { padding: 8px; font-size: 16px; margin-right: 10px; }
+button.submit { padding: 8px 15px; font-size: 16px; }
+
+#trash { width: 80px; height: 80px; margin: 30px auto 0; border-radius: 12px; background-color: #ccc; display: flex; align-items: center; justify-content: center; font-size: 24px; color: #fff; transition: background-color 0.3s; }
+#trash.over { background-color: #f44336; }
+
+#history { margin-top: 30px; text-align: left; width: 80%; margin-left: auto; margin-right: auto; }
+#history h3 { text-align: center; margin-bottom: 10px; }
+#history ul { list-style-type: none; padding: 0; max-height: 200px; overflow-y: auto; border: 1px solid #ccc; border-radius: 10px; background: #fafafa; }
+#history li { padding: 6px 10px; border-bottom: 1px solid #ddd; font-size: 14px; }
+#history li:last-child { border-bottom: none; }
+
+#chart-container { width: 85%; margin: 40px auto; }
+  </style>
+</head>
+<body>
+
+<h2>Mon niveau d'énergie</h2>
+<div class="energy-bar">
+  <div id="fill" class="energy-fill"></div>
+</div>
+<div id="text" class="energy-text">Énergie : 70%</div>
+
+<div class="activity-list" id="activityList"></div>
+
+<div id="trash">🗑️</div>
+
+<div class="alert" id="alert">⚠️ Énergie faible ! Pense à te reposer.</div>
+
+<form id="activityForm">
+  <input type="text" id="activityTitle" placeholder="Nom de l'activité" required>
+  <select id="activityValue">
+    <option value="-20">-20</option>
+    <option value="-10">-10</option>
+    <option value="10">+10</option>
+    <option value="20">+20</option>
+  </select>
+  <button type="submit" class="submit">Ajouter</button>
+</form>
+
+<div id="history">
+  <h3>Historique des dernières 24h</h3>
+  <ul id="historyList"></ul>
+</div>
+
+<div id="chart-container">
+  <h3>Évolution de l’énergie sur 24 h</h3>
+  <canvas id="energyChart"></canvas>
+</div>
+
+<script>
+let energy = Number(localStorage.getItem("energy")) || 70;
+let activities = JSON.parse(localStorage.getItem("activities")) || [
+  {title:"Course à pied", value:-20},
+  {title:"Sieste", value:10},
+  {title:"Lecture", value:20},
+  {title:"Ménage", value:-10}
+];
+let history = JSON.parse(localStorage.getItem("history")) || [];
+let energyLog = JSON.parse(localStorage.getItem("energyLog")) || [];
+
+const alertBox = document.getElementById("alert");
+const activityList = document.getElementById("activityList");
+const trash = document.getElementById("trash");
+const historyList = document.getElementById("historyList");
+
+// Nettoyer les anciennes données (> 24h)
+function cleanOldData() {
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  history = history.filter(e => now - e.time < dayMs);
+  energyLog = energyLog.filter(e => now - e.time < dayMs);
+}
+
+// Sauvegarde locale
+function saveState() {
+  localStorage.setItem("energy", energy);
+  localStorage.setItem("activities", JSON.stringify(activities));
+  localStorage.setItem("history", JSON.stringify(history));
+  localStorage.setItem("energyLog", JSON.stringify(energyLog));
+}
+
+// Rendu du niveau d’énergie
+function renderEnergy() {
+  const container = document.body;
+  const fill = document.getElementById("fill");
+  const text = document.getElementById("text");
+  fill.style.width = energy + "%";
+  text.textContent = "Énergie : " + energy + "%";
+  container.classList.remove("low","medium","high");
+  if (energy <= 30) container.classList.add("low");
+  else if (energy <= 60) container.classList.add("medium");
+  else container.classList.add("high");
+  if (energy <= 20) showAlert("⚠️ Énergie faible ! Pense à te reposer.");
+  saveState();
+}
+
+// Alerte
+function showAlert(message) {
+  alertBox.textContent = message;
+  alertBox.classList.add("show");
+  if(navigator.vibrate) navigator.vibrate([200,100,200]);
+  setTimeout(()=> alertBox.classList.remove("show"),3000);
+}
+
+// Historique
+function renderHistory() {
+  cleanOldData();
+  historyList.innerHTML = "";
+  history
+    .sort((a,b)=>b.time - a.time)
+    .forEach(entry => {
+      const li = document.createElement("li");
+      const date = new Date(entry.time).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+      li.textContent = `[${date}] ${entry.title} (${entry.value>0?"+":""}${entry.value})`;
+      historyList.appendChild(li);
+    });
+  saveState();
+}
+
+// Création d’une activité
+function createActivityButton(title,value){
+  const btn = document.createElement("button");
+  btn.className = "activity "+(value>0?"gain":"cost");
+  btn.textContent = title + " (" + (value>0?"+":"") + value + ")";
+  btn.draggable = true;
+
+  btn.addEventListener("click",()=> {
+    energy = Math.max(0,Math.min(100,energy+Number(value)));
+    renderEnergy();
+
+    const now = Date.now();
+    history.push({title, value, time: now});
+    energyLog.push({time: now, energy});
+    renderHistory();
+    updateChart();
+    saveState();
+  });
+
+  btn.addEventListener("dragstart", e => {
+    e.dataTransfer.setData("text/plain", "");
+    btn.classList.add("dragging");
+  });
+
+  btn.addEventListener("dragend", e => {
+    btn.classList.remove("dragging");
+  });
+
+  activityList.appendChild(btn);
+}
+
+// Suppression via poubelle
+trash.addEventListener("dragover", e => { e.preventDefault(); trash.classList.add("over"); });
+trash.addEventListener("dragleave", e => { trash.classList.remove("over"); });
+trash.addEventListener("drop", e => {
+  e.preventDefault();
+  const dragged = document.querySelector(".dragging");
+  if(dragged) {
+    const title = dragged.textContent.split(" (")[0];
+    activities = activities.filter(a => a.title !== title);
+    dragged.remove();
+    saveState();
+  }
+  trash.classList.remove("over");
+});
+
+// Initialisation
+activities.forEach(act => createActivityButton(act.title, act.value));
+renderEnergy();
+renderHistory();
+
+// --- GRAPHIQUE ---
+const ctx = document.getElementById("energyChart").getContext("2d");
+let chart = new Chart(ctx, {
+  type: "line",
+  data: {
+    labels: energyLog.map(e => new Date(e.time).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})),
+    datasets: [{
+      label: "Énergie (%)",
+      data: energyLog.map(e => e.energy),
+      borderColor: "#4caf50",
+      backgroundColor: "rgba(76,175,80,0.1)",
+      fill: true,
+      tension: 0.3,
+      pointRadius: 4
+    }]
+  },
+  options: {
+    scales: {
+      y: { beginAtZero: true, max: 100 },
+      x: { title: { display: true, text: "Heure" } }
+    },
+    plugins: { legend: { display: false } }
+  }
+});
+
+function updateChart() {
+  cleanOldData();
+  chart.data.labels = energyLog.map(e => new Date(e.time).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}));
+  chart.data.datasets[0].data = energyLog.map(e => e.energy);
+  chart.update();
+  saveState();
+}
+
+// Log initial si vide
+if (energyLog.length === 0) {
+  energyLog.push({time: Date.now(), energy});
+  saveState();
+}
+updateChart();
+
+// Ajout d’activités via le formulaire
+document.getElementById("activityForm").addEventListener("submit", e=>{
+  e.preventDefault();
+  const title = document.getElementById("activityTitle").value.trim();
+  const value = Number(document.getElementById("activityValue").value);
+  if(title) {
+    createActivityButton(title,value);
+    activities.push({title,value});
+    saveState();
+  }
+  document.getElementById("activityTitle").value = "";
+});
+</script>
+
+</body>
+</html>
